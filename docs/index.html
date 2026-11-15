@@ -1,0 +1,856 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>一方向の回転だけで動くペンプロッター</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: 製図台。左に機構と紙を大きく、右に操作盤と角度空間の小窓。狭い幅では縦積み。 */
+:root {
+  --bg: #e9edf1;
+  --surface: #f8fafb;
+  --paper: #ffffff;
+  --fg: #18222d;
+  --muted: #5a6877;
+  --line: #c9d2db;
+  --ink: #1c3fb0;
+  --mech: #0a7f78;
+  --warn: #b3261e;
+  --font-body: "Zen Kaku Gothic New", "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, sans-serif;
+  --font-data: "JetBrains Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11161b; --surface: #1a2027; --paper: #222a33; --fg: #e5ebf1; --muted: #93a1af;
+    --line: #333e4a; --ink: #9db8ff; --mech: #45cfc2; --warn: #ff8a80; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11161b; --surface: #1a2027; --paper: #222a33; --fg: #e5ebf1; --muted: #93a1af;
+  --line: #333e4a; --ink: #9db8ff; --mech: #45cfc2; --warn: #ff8a80; color-scheme: dark;
+}
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 15px; line-height: 1.6;
+  padding-block: 20px 32px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+[hidden] { display: none !important; }
+.wrap { max-width: 1120px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+header h1 { font-size: 22px; font-weight: 700; margin: 0; text-wrap: balance; }
+header p { margin: 4px 0 0; color: var(--muted); max-width: 46em; }
+.grid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
+@media (max-width: 860px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+.stage { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 8px; min-width: 0; }
+.stage canvas { display: block; width: 100%; height: auto; }
+.stage canvas.drawable { cursor: crosshair; touch-action: none; }
+.panel { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.group { display: flex; flex-direction: column; gap: 10px; }
+.group h2 { font-size: 12px; font-weight: 700; letter-spacing: .08em; color: var(--muted); margin: 0; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+button, select {
+  font: inherit; color: var(--fg); background: var(--surface); border: 1px solid var(--line);
+  border-radius: 4px; padding: 6px 12px; cursor: pointer;
+}
+button:hover, select:hover { border-color: var(--mech); }
+button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--mech); outline-offset: 2px; }
+button.primary { background: var(--mech); border-color: var(--mech); color: var(--bg); font-weight: 700; }
+label.slider { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; font-size: 13px; }
+label.slider input { grid-column: 1 / -1; width: 100%; accent-color: var(--mech); }
+label.slider output, .stats dd { font-family: var(--font-data); font-variant-numeric: tabular-nums; }
+label.check { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+label.check input { accent-color: var(--mech); }
+.stats { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; margin: 0; font-size: 13px; }
+.stats dt { color: var(--muted); }
+.stats dd { margin: 0; text-align: right; }
+.msg { color: var(--warn); font-size: 13px; margin: 0; }
+.torus canvas { display: block; width: 100%; max-width: 320px; height: auto; border: 1px solid var(--line); border-radius: 4px; background: var(--paper); }
+.note { font-size: 13px; color: var(--muted); margin: 0; }
+.progress { height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
+.progress i { display: block; height: 100%; width: 0; background: var(--ink); }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>一方向の回転だけで動くペンプロッター</h1>
+    <p>時計回りにしか回らない２つのモーターの組み合わせで絵を描くペンプロッターのシミュレータです。好きな画像でも試せます(アップロードはされずブラウザ内で動作します)。</p>
+  </header>
+
+  <div class="grid">
+    <div class="stage">
+      <canvas id="view" width="800" height="600" aria-label="リンク機構と紙の表示"></canvas>
+      <div class="progress" aria-hidden="true"><i id="bar"></i></div>
+    </div>
+
+    <div class="panel">
+      <div class="group">
+        <h2>描くもの</h2>
+        <div class="row">
+          <select id="mode" aria-label="描き方を選ぶ">
+            <option value="stroke">ストローク（ペンを上下する）</option>
+            <option value="scan">揺らぎ走査（ペンを上げない）</option>
+            <option value="retrace">重ねなぞり（ペンを上げない）</option>
+          </select>
+        </div>
+        <div class="row">
+          <select id="preset" aria-label="線画を選ぶ">
+            <option value="cat">ねこ</option>
+            <option value="house">家</option>
+            <option value="star">星</option>
+            <option value="spiral">渦巻き</option>
+            <option value="custom">自分で描く</option>
+            <option value="image" disabled>読み込んだ画像</option>
+          </select>
+          <button id="clear" hidden>消す</button>
+        </div>
+        <p class="note" id="hint" hidden>紙の枠の中をドラッグすると線が追加されます。</p>
+        <div class="row">
+          <button id="pick">画像を読み込む</button>
+          <input id="file" type="file" accept="image/*" hidden>
+        </div>
+        <p class="note">画像はこのページに貼り付け（Ctrl+V）またはドロップしても読み込めます。暗い線だけを拾って線画にします。画像は外部に送信されません。</p>
+        <label class="slider" id="thrRow" hidden>線として拾う暗さ <output id="thrOut"></output>
+          <input id="thr" type="range" min="20" max="220" step="5" value="80">
+        </label>
+        <div class="row">
+          <button id="play" class="primary">一時停止</button>
+          <button id="restart">最初から</button>
+          <button id="finish">完成を見る</button>
+        </div>
+        <label class="slider">再生速度 <output id="speedOut"></output>
+          <input id="speed" type="range" min="-2" max="5" step="0.5" value="0">
+        </label>
+        <label class="check" id="upRow"><input id="showUp" type="checkbox" checked> ペンを上げている間の軌跡（直近）を表示</label>
+      </div>
+
+      <div class="group" id="scanBox" hidden>
+        <h2>揺らぎ走査の設定</h2>
+        <label class="slider">周回数（線の本数） <output id="revsOut"></output>
+          <input id="revs" type="range" min="30" max="200" step="5" value="90">
+        </label>
+        <label class="slider">濃淡の強さ <output id="conOut"></output>
+          <input id="con" type="range" min="0" max="20" step="1" value="12">
+        </label>
+        <label class="slider">線の震え <output id="tremOut"></output>
+          <input id="trem" type="range" min="0" max="1" step="0.05" value="0.5">
+        </label>
+        <p class="note">暗い場所ほど線が寄り集まり、小刻みに震えます。逆転できないぶん線を曲げられる角度に上限があるので、細い線より大きな明暗のかたまりが得意です。読み込んだ画像は明暗をそのまま使います。</p>
+      </div>
+
+      <div class="group" id="reBox" hidden>
+        <h2>重ねなぞりの設定</h2>
+        <label class="slider">濃さ <output id="depthOut"></output>
+          <input id="depth" type="range" min="4" max="16" step="1" value="12">
+        </label>
+        <label class="slider">白地を避ける強さ <output id="avoidOut"></output>
+          <input id="avoid" type="range" min="0.5" max="4" step="0.5" value="2">
+        </label>
+        <p class="note">白い場所は既に描いた線の上だけを通って横切り、暗い場所で新しい線を増やします。重ねた線は濃くならないので、移動の跡がほとんど残りません。速度比は 1:16 までに固定で、下の「最低速度」は使いません。計算に1秒ほどかかります。</p>
+      </div>
+
+      <div class="group">
+        <h2>結果</h2>
+        <dl class="stats">
+          <dt>一筆の数（姿勢の乗り換え）</dt><dd id="sRuns">–</dd>
+          <dt>所要時間（最高 60rpm）</dt><dd id="sTime">–</dd>
+          <dt>うち描いている時間</dt><dd id="sDraw">–</dd>
+          <dt>回転数 M1 / M2</dt><dd id="sRev">–</dd>
+          <dt>目標線からの最大ずれ</dt><dd id="sErr">–</dd>
+          <dt>逆転した回数</dt><dd id="sBack">–</dd>
+          <dt>ペンを上げた回数</dt><dd id="sLift">–</dd>
+          <dt>既にある線をなぞった割合</dt><dd id="sRe">–</dd>
+        </dl>
+        <p class="msg" id="msg" hidden></p>
+      </div>
+
+      <div class="group torus">
+        <h2>角度空間（横 M1、縦 M2、各 0〜360°）</h2>
+        <canvas id="torus" width="320" height="320" aria-label="2つのモーター角度の軌跡"></canvas>
+        <p class="note">逆転できないので、軌跡は必ず右上へ進みます。濃い線が描画中、薄い線が直近の移動です。</p>
+      </div>
+
+      <div class="group">
+        <h2>寸法</h2>
+        <label class="slider">クランク半径 r <output id="rOut"></output>
+          <input id="r" type="range" min="20" max="80" step="1" value="50">
+        </label>
+        <label class="slider">ロッド長 L <output id="LOut"></output>
+          <input id="L" type="range" min="120" max="320" step="2" value="220">
+        </label>
+        <label class="slider">モーター間距離 d <output id="dOut"></output>
+          <input id="d" type="range" min="120" max="420" step="2" value="300">
+        </label>
+        <label class="slider">最低速度（最高速度に対する比） <output id="rhoOut"></output>
+          <input id="rho" type="range" min="0" max="0.3" step="0.01" value="0.05">
+        </label>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script id="core">
+/* ---- 運動学と経路計画（DOM に依存しない） ---- */
+const TAU = Math.PI * 2;
+function wrapPi(a) { a = (a + Math.PI) % TAU; if (a < 0) a += TAU; return a - Math.PI; }
+function mod2pi(a) { a %= TAU; return a < 0 ? a + TAU : a; }
+
+// 画面座標（y 下向き）。角度が増える向き = 画面上の時計回り。
+function fk(p, a1, a2) {
+  const e1x = -p.d / 2 + p.r * Math.cos(a1), e1y = p.r * Math.sin(a1);
+  const e2x = p.d / 2 + p.r * Math.cos(a2), e2y = p.r * Math.sin(a2);
+  const dx = e2x - e1x, dy = e2y - e1y, D = Math.hypot(dx, dy);
+  const h2 = p.L * p.L - D * D / 4, h = Math.sqrt(Math.max(0, h2));
+  return { e1: [e1x, e1y], e2: [e2x, e2y], pen: [(e1x + e2x) / 2 - dy / D * h, (e1y + e2y) / 2 + dx / D * h], ok: h2 > 0 };
+}
+const MARGIN = 0.96; // 死点（クランクとロッドが一直線）から離す余裕
+// 各クランクの 2 解を返す。q[0] = M1 の [解0, 解1]、q[1] = M2。届かなければ null。
+function ik(p, x, y) {
+  const q = [];
+  for (const mx of [-p.d / 2, p.d / 2]) {
+    const wx = x - mx, dist = Math.hypot(wx, y);
+    const c = (p.r * p.r + dist * dist - p.L * p.L) / (2 * p.r * dist);
+    if (!(Math.abs(c) <= MARGIN)) return null;
+    const phi = Math.atan2(y, wx), al = Math.acos(c);
+    q.push([phi + al, phi - al]);
+  }
+  for (let b = 0; b < 4; b++) {
+    const f = fk(p, q[0][b & 1], q[1][b >> 1]);
+    if (!f.ok || Math.hypot(f.pen[0] - x, f.pen[1] - y) > 1e-6) return null;
+  }
+  return q;
+}
+function mechOk(p) { return p.d + 2 * p.r < 1.94 * p.L && p.d - 2 * p.r > 0.3 * p.L; }
+function center(p) { return [0, Math.sqrt(p.L * p.L - p.d * p.d / 4)]; }
+// 4 姿勢すべてが使える領域の輪郭
+function regionOutline(p, n) {
+  const lim = c => p.r * c + Math.sqrt(p.r * p.r * c * c - p.r * p.r + p.L * p.L);
+  const lo = lim(-MARGIN), hi = lim(MARGIN), pts = [];
+  const at = (d1, d2) => { const x = (d1 * d1 - d2 * d2) / (2 * p.d); return [x, Math.sqrt(Math.max(0, d1 * d1 - (x + p.d / 2) ** 2))]; };
+  for (let i = 0; i <= n; i++) pts.push(at(lo + (hi - lo) * i / n, lo));
+  for (let i = 0; i <= n; i++) pts.push(at(hi, lo + (hi - lo) * i / n));
+  for (let i = 0; i <= n; i++) pts.push(at(hi - (hi - lo) * i / n, hi));
+  for (let i = 0; i <= n; i++) pts.push(at(lo, hi - (hi - lo) * i / n));
+  return pts;
+}
+function resample(path, step) {
+  const out = [path[0]];
+  for (let i = 1; i < path.length; i++) {
+    const [ax, ay] = path[i - 1], [bx, by] = path[i], len = Math.hypot(bx - ax, by - ay);
+    const n = Math.max(1, Math.ceil(len / step));
+    for (let k = 1; k <= n; k++) out.push([ax + (bx - ax) * k / n, ay + (by - ay) * k / n]);
+  }
+  return out;
+}
+// 単位座標の線画を、4 姿勢が使える領域に収まる最大の大きさで配置する
+function fitPaths(p, unitPaths) {
+  const c = center(p), dense = unitPaths.map(u => resample(u, 0.03));
+  const ok = s => dense.every(path => path.every(([x, y]) => ik(p, c[0] + x * s, c[1] + y * s)));
+  let lo = 0, hi = 3 * p.r;
+  for (let i = 0; i < 30; i++) { const m = (lo + hi) / 2; if (ok(m)) lo = m; else hi = m; }
+  const s = lo * 0.94;
+  return unitPaths.map(u => u.map(([x, y]) => [c[0] + x * s, c[1] + y * s]));
+}
+const TOL = 0.02;
+// 線を「同じ姿勢のまま、両モーターとも正転で描ける区間」に分ける
+function splitRuns(p, paths, step, rho) {
+  const runs = []; let skipped = 0;
+  const pieces = [];
+  for (const path of paths) {
+    if (path.length < 2) continue;
+    let cur = [];
+    for (const [x, y] of resample(path, step)) {
+      const q = ik(p, x, y);
+      if (q) cur.push({ x, y, q });
+      else { skipped++; if (cur.length > 1) pieces.push(cur); cur = []; }
+    }
+    if (cur.length > 1) pieces.push(cur);
+  }
+  // 遅い方のモーターの進み ÷ 速い方の進み。最低速度比 rho 以上なら、ずれなく描ける
+  const ratio = (pc, k, b, dir) => {
+    const d1 = wrapPi(pc[k + 1].q[0][b & 1] - pc[k].q[0][b & 1]) * dir;
+    const d2 = wrapPi(pc[k + 1].q[1][b >> 1] - pc[k].q[1][b >> 1]) * dir;
+    const m = Math.max(Math.abs(d1), Math.abs(d2)) || 1;
+    return Math.min(d1, d2) / m;
+  };
+  for (const pc of pieces) {
+    let k = 0; const n = pc.length;
+    while (k < n - 1) {
+      let best = null;
+      for (const tier of [rho - 1e-9, -TOL]) { // まず厳密に描ける姿勢を探し、無ければ少しのずれを許す
+        best = null;
+        for (let b = 0; b < 4; b++) for (const dir of [1, -1]) {
+          let len = 0; while (k + len < n - 1 && ratio(pc, k + len, b, dir) >= tier) len++;
+          if (!best || len > best.len) best = { len, b, dir };
+        }
+        if (best.len > 0) break;
+      }
+      if (best.len === 0) { // どの姿勢でも描けない区間。最もましな姿勢で 1 区間だけ進む
+        let v = -Infinity;
+        for (let b = 0; b < 4; b++) for (const dir of [1, -1]) { const w = ratio(pc, k, b, dir); if (w > v) { v = w; best = { len: 1, b, dir }; } }
+      }
+      const pts = pc.slice(k, k + best.len + 1);
+      runs.push({ pts: best.dir > 0 ? pts : pts.reverse(), b: best.b });
+      k += best.len;
+    }
+  }
+  return { runs, skipped };
+}
+// 実際のモーター角の時系列を作る。角度は単調増加のみ、速度は [rho*wmax, wmax]。
+function buildTrajectory(p, runs, opt) {
+  const wmax = opt.wmax, wmin = opt.rho * wmax;
+  const tr = { t: [], a1: [], a2: [], ink: [], x: [], y: [] };
+  let a1 = 0, a2 = 0, t = 0, drawT = 0, maxErr = 0, backward = 0;
+  const push = ink => { const f = fk(p, a1, a2); tr.t.push(t); tr.a1.push(a1); tr.a2.push(a2); tr.ink.push(ink); tr.x.push(f.pen[0]); tr.y.push(f.pen[1]); };
+  const th = (pt, b) => [pt.q[0][b & 1], pt.q[1][b >> 1]];
+  const need = tg => {
+    let n1 = mod2pi(tg[0] - a1), n2 = mod2pi(tg[1] - a2);
+    for (let i = 0; i < 4; i++) {
+      const T = Math.max(n1, n2) / wmax;
+      if (n1 < wmin * T - 1e-12) n1 += TAU; else if (n2 < wmin * T - 1e-12) n2 += TAU; else break;
+    }
+    return [n1, n2, Math.max(n1, n2) / wmax];
+  };
+  push(0);
+  const rem = runs.slice();
+  while (rem.length) {
+    let bi = 0, bn = null;
+    for (let i = 0; i < rem.length; i++) { const n = need(th(rem[i].pts[0], rem[i].b)); if (!bn || n[2] < bn[2]) { bn = n; bi = i; } }
+    const run = rem.splice(bi, 1)[0];
+    // ペンを上げて、次の一筆の開始姿勢まで回り込む
+    const s1 = a1, s2 = a2, t0 = t, steps = Math.max(1, Math.ceil(Math.max(bn[0], bn[1]) / 0.03));
+    for (let i = 1; i <= steps; i++) { a1 = s1 + bn[0] * i / steps; a2 = s2 + bn[1] * i / steps; t = t0 + bn[2] * i / steps; push(0); }
+    // ペンを下ろして線をなぞる
+    for (let k = 1; k < run.pts.length; k++) {
+      const tg = th(run.pts[k], run.b);
+      const r1 = wrapPi(tg[0] - a1), r2 = wrapPi(tg[1] - a2);
+      const n1 = Math.max(0, r1), n2 = Math.max(0, r2), dt = Math.max(n1, n2) / wmax;
+      if (dt <= 0) continue;
+      const adv = n => Math.min(Math.max(n, wmin * dt), wmax * dt);
+      const b1 = a1, b2 = a2;
+      a1 += adv(n1); a2 += adv(n2); t += dt; drawT += dt;
+      if (a1 < b1 || a2 < b2) backward++;
+      push(1);
+      maxErr = Math.max(maxErr, Math.hypot(tr.x[tr.x.length - 1] - run.pts[k].x, tr.y[tr.y.length - 1] - run.pts[k].y));
+    }
+  }
+  return { tr, total: t, drawT, maxErr, backward, rev: [a1 / TAU, a2 / TAU] };
+}
+function planAll(p, paths, opt) {
+  const { runs, skipped } = splitRuns(p, paths, opt.step || 0.5, opt.rho);
+  const res = buildTrajectory(p, runs, opt);
+  res.runs = runs.length; res.skipped = skipped;
+  return res;
+}
+/* ---- 画像から線を拾う：二値化 → 細線化 → 追跡 → 間引き ---- */
+function thin(img, w, h) { // Zhang-Suen 法
+  for (let x = 0; x < w; x++) img[x] = img[(h - 1) * w + x] = 0;
+  for (let y = 0; y < h; y++) img[y * w] = img[y * w + w - 1] = 0;
+  const del = []; let changed = true;
+  while (changed) {
+    changed = false;
+    for (let pass = 0; pass < 2; pass++) {
+      del.length = 0;
+      for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+        const i = y * w + x; if (!img[i]) continue;
+        const p2 = img[i - w], p3 = img[i - w + 1], p4 = img[i + 1], p5 = img[i + w + 1], p6 = img[i + w], p7 = img[i + w - 1], p8 = img[i - 1], p9 = img[i - w - 1];
+        const B = p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9; if (B < 2 || B > 6) continue;
+        const A = (!p2 && p3 ? 1 : 0) + (!p3 && p4 ? 1 : 0) + (!p4 && p5 ? 1 : 0) + (!p5 && p6 ? 1 : 0) + (!p6 && p7 ? 1 : 0) + (!p7 && p8 ? 1 : 0) + (!p8 && p9 ? 1 : 0) + (!p9 && p2 ? 1 : 0);
+        if (A !== 1) continue;
+        if (pass === 0 ? (p2 * p4 * p6 || p4 * p6 * p8) : (p2 * p4 * p8 || p2 * p6 * p8)) continue;
+        del.push(i);
+      }
+      for (const i of del) img[i] = 0;
+      if (del.length) changed = true;
+    }
+  }
+}
+function tracePaths(img, w, h) {
+  const N = [[1, 0], [0, 1], [-1, 0], [0, -1], [1, 1], [-1, 1], [-1, -1], [1, -1]];
+  const vis = new Uint8Array(w * h), ends = [], rest = [];
+  for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+    if (!img[y * w + x]) continue;
+    let c = 0; for (const [dx, dy] of N) c += img[(y + dy) * w + x + dx];
+    (c === 1 ? ends : rest).push([x, y]);
+  }
+  const paths = [];
+  for (const [sx, sy] of ends.concat(rest)) {
+    if (vis[sy * w + sx]) continue;
+    const path = [];
+    for (const [dx, dy] of N) if (vis[(sy + dy) * w + sx + dx]) { path.push([sx + dx, sy + dy]); break; } // 既に描いた線につなぐ
+    let x = sx, y = sy;
+    for (;;) {
+      vis[y * w + x] = 1; path.push([x, y]);
+      let nx = null;
+      for (const [dx, dy] of N) { const i = (y + dy) * w + x + dx; if (img[i] && !vis[i]) { nx = [x + dx, y + dy]; break; } }
+      if (!nx) break;
+      [x, y] = nx;
+    }
+    const tail = path.slice(-4);
+    for (const [dx, dy] of N) { // 終点が別の線や自分の始点に接していれば閉じる
+      const qx = x + dx, qy = y + dy;
+      if (vis[qy * w + qx] && !tail.some(t => t[0] === qx && t[1] === qy)) { path.push([qx, qy]); break; }
+    }
+    paths.push(path);
+  }
+  return paths;
+}
+function rdp(pts, eps) {
+  if (pts.length < 3) return pts;
+  const keep = new Uint8Array(pts.length); keep[0] = keep[pts.length - 1] = 1;
+  const stack = [[0, pts.length - 1]];
+  while (stack.length) {
+    const [a, b] = stack.pop(), [ax, ay] = pts[a], [bx, by] = pts[b], len = Math.hypot(bx - ax, by - ay);
+    let mi = -1, md = eps;
+    for (let i = a + 1; i < b; i++) {
+      const d = len < 1e-9 ? Math.hypot(pts[i][0] - ax, pts[i][1] - ay) : Math.abs((bx - ax) * (ay - pts[i][1]) - (ax - pts[i][0]) * (by - ay)) / len;
+      if (d > md) { md = d; mi = i; }
+    }
+    if (mi > 0) { keep[mi] = 1; stack.push([a, mi], [mi, b]); }
+  }
+  return pts.filter((_, i) => keep[i]);
+}
+// 二値画像（1 = 線）を単位座標の折れ線の集まりにする
+function bitmapToPaths(bin, w, h) {
+  thin(bin, w, h);
+  const paths = tracePaths(bin, w, h).filter(p => p.length >= 6).map(p => rdp(p, 0.75));
+  if (!paths.length) return [];
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const p of paths) for (const [x, y] of p) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+  const half = Math.max(x1 - x0, y1 - y0, 1) / 2, cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  return paths.map(p => p.map(([x, y]) => [(x - cx) / half, (y - cy) / half]));
+}
+/* ---- 揺らぎ走査：ペンを上げず、止めず、戻らずに濃淡を出す ----
+   角度空間 (θ1, θ2) を斜めに走る線の束を考える。θ1 を固定して θ2 方向に見たとき、
+   線の密度が絵の濃さに比例するように線を寄せる（θ2 方向の累積分布を逆引きする）。 */
+function blurWrap(G, N, r) {
+  const T = new Float32Array(N * N), w = 2 * r + 1;
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) { let a = 0; for (let k = -r; k <= r; k++) a += G[i * N + (j + k + N) % N]; T[i * N + j] = a / w; }
+    for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) { let a = 0; for (let k = -r; k <= r; k++) a += T[((i + k + N) % N) * N + j]; G[i * N + j] = a / w; }
+  }
+}
+function buildScan(p, dark, opt) {
+  const N = opt.grid || 360, K = opt.contrast, rho = Math.max(opt.rho, 0.02), revs = opt.revs, wmax = opt.wmax;
+  const G = new Float32Array(N * N);
+  for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) { const q = fk(p, i * TAU / N, j * TAU / N).pen; G[i * N + j] = dark(q[0], q[1]); }
+  blurWrap(G, N, opt.blur == null ? 2 : opt.blur);
+  // 紙の上での線の間隔を決める幾何係数（死点に近いほど線が詰まるので、その分を逃がす）
+  const gam = opt.geom || 0, GE = new Float32Array(N * N).fill(1);
+  if (gam > 0) {
+    let mean = 0; const e = 1e-4;
+    for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+      const a = i * TAU / N, b = j * TAU / N, q0 = fk(p, a, b).pen, q1 = fk(p, a + e, b).pen, q2 = fk(p, a, b + e).pen;
+      const c1x = (q1[0] - q0[0]) / e, c1y = (q1[1] - q0[1]) / e, c2x = (q2[0] - q0[0]) / e, c2y = (q2[1] - q0[1]) / e;
+      const g = Math.abs(c1x * c2y - c1y * c2x) / (Math.hypot(c1x + c2x, c1y + c2y) + 1e-6);
+      GE[i * N + j] = g; mean += g;
+    }
+    mean /= N * N;
+    for (let k = 0; k < N * N; k++) GE[k] = Math.pow(Math.max(GE[k] / mean, 0.05), gam);
+    blurWrap(GE, N, 2);
+  }
+  const W = (i, j) => (1 + K * G[i * N + j]) * GE[i * N + j];
+  // 行（θ1 固定）ごとの累積分布。平均のずれが 0 になるよう原点を合わせる
+  const M = N + 1, C = new Float64Array(N * M);
+  for (let i = 0; i < N; i++) {
+    let tot = 0; for (let j = 0; j < N; j++) tot += W(i, j);
+    let c = 0, off = 0;
+    for (let j = 0; j < N; j++) { C[i * M + j] = c; const nx = c + W(i, j) / tot * TAU; off += (c + nx) / 2 - (j + 0.5) * TAU / N; c = nx; }
+    C[i * M + N] = TAU; off /= N;
+    for (let j = 0; j <= N; j++) C[i * M + j] -= off;
+  }
+  const Qrow = (i, F) => {
+    const base = C[i * M], fv = base + mod2pi(F - base);
+    let lo = 0, hi = N - 1;
+    while (lo < hi) { const m = (lo + hi + 1) >> 1; if (C[i * M + m] <= fv) lo = m; else hi = m - 1; }
+    const a = C[i * M + lo], b = C[i * M + lo + 1];
+    return (lo + (b > a ? (fv - a) / (b - a) : 0)) * TAU / N;
+  };
+  const Q = (th1, F) => { const u = mod2pi(th1) / TAU * N, i0 = Math.floor(u) % N, a = Qrow(i0, F), b = Qrow((i0 + 1) % N, F); return a + wrapPi(b - a) * (u - Math.floor(u)); };
+  const tri = u => 4 * Math.abs(u - Math.floor(u) - 0.5) - 1;
+  const tr = { t: [], a1: [], a2: [], ink: [], x: [], y: [] };
+  const dl = opt.ds || 0.002, LAM = 0.05, A = (1 - rho) * LAM / 4 * opt.tremble;
+  let a1 = 0, a2 = Q(0, 0), t = 0, clamped = 0, steps = 0;
+  const push = ink => { const q = fk(p, a1, a2).pen; tr.t.push(t); tr.a1.push(a1); tr.a2.push(a2); tr.ink.push(ink); tr.x.push(q[0]); tr.y.push(q[1]); };
+  push(0);
+  const end = revs * TAU;
+  while (a1 < end) {
+    const n = tr.x.length - 1, D = dark(tr.x[n], tr.y[n]), th1 = a1 + dl;
+    const tgt = Q(th1, th1 * (1 + 1 / revs)) + D * A * tri(th1 / LAM);
+    let q = wrapPi(tgt - a2) / dl;           // θ2 の進み ÷ θ1 の進み
+    if (q < rho || q > 1 / rho) { clamped++; q = Math.min(Math.max(q, rho), 1 / rho); } // 逆転・停止はしない
+    if (q <= 1) { a1 += dl; a2 += q * dl; } else { a1 += dl / q; a2 += dl; }
+    t += dl / wmax; steps++; push(1);
+  }
+  return { tr, total: t, drawT: t, maxErr: null, backward: 0, rev: [a1 / TAU, a2 / TAU], runs: 1, skipped: 0, clamped: clamped / steps };
+}
+/* ---- 重ねなぞり：白い場所は既に描いた線の上だけを通り、暗い場所で新しい線を増やす ----
+   角度空間に「M1 が主に進む一歩 a = (1, 1/16)」「M2 が主に進む一歩 b = (1/16, 1)」「両方進む一歩 a+b」
+   だけでできた格子を置く。どの一歩も両モーターが正転し、速度比は 1/16 以上になる。
+   格子は 360° で元の点に戻るので、同じ線を寸分違わずなぞり直せる。 */
+function buildRetrace(p, dark, opt) {
+  const QN = 16, NI = 4080, NN = 65280, h = TAU / 255, rp = 1 / QN, wmax = opt.wmax;
+  const idx = (i, j) => { const jm = ((j % QN) + QN) % QN, m = (j - jm) / QN; let im = (i + 256 * m) % NI; if (im < 0) im += NI; return jm * NI + im; };
+  const STEP = [[1, rp], [rp, 1], [1 + rp, 1 + rp]];
+  // 紙を 0.5mm の画素に分け、各一歩が通る画素を前もって求める
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (let n = 0; n < NN; n += 7) { const jm = Math.floor(n / NI), im = n % NI, q = fk(p, h * (im + jm * rp), h * (im * rp + jm)).pen; x0 = Math.min(x0, q[0]); x1 = Math.max(x1, q[0]); y0 = Math.min(y0, q[1]); y1 = Math.max(y1, q[1]); }
+  const ps = 0.5, CS = 4; x0 -= 3; y0 -= 3;
+  const FW = Math.ceil((x1 + 3 - x0) / ps), FH = Math.ceil((y1 + 3 - y0) / ps), CW = Math.ceil(FW / CS), CH = Math.ceil(FH / CS);
+  const EP = new Int32Array(NN * 9);
+  for (let n = 0; n < NN; n++) {
+    const jm = Math.floor(n / NI), im = n % NI, t1 = h * (im + jm * rp), t2 = h * (im * rp + jm);
+    for (let ty = 0; ty < 3; ty++) for (let q = 1; q <= 3; q++) {
+      const g = fk(p, t1 + h * STEP[ty][0] * q / 3, t2 + h * STEP[ty][1] * q / 3).pen;
+      const u = Math.min(FW - 1, Math.max(0, Math.floor((g[0] - x0) / ps))), v = Math.min(FH - 1, Math.max(0, Math.floor((g[1] - y0) / ps)));
+      EP[n * 9 + ty * 3 + q - 1] = v * FW + u;
+    }
+  }
+  const cellOf = new Int32Array(FW * FH);
+  for (let v = 0; v < FH; v++) for (let u = 0; u < FW; u++) cellOf[v * FW + u] = Math.floor(v / CS) * CW + Math.floor(u / CS);
+  // 2mm 角の区画ごとに、濃さに応じた「塗ってよい画素数」を決める
+  const target = new Float32Array(CW * CH), pen = new Float32Array(CW * CH);
+  for (let cv = 0; cv < CH; cv++) for (let cu = 0; cu < CW; cu++) {
+    let d = 0; for (const [a, b] of [[1, 1], [3, 1], [1, 3], [3, 3]]) d += dark(x0 + (cu * CS + a) * ps, y0 + (cv * CS + b) * ps);
+    d /= 4;
+    target[cv * CW + cu] = d < 0.06 ? 0 : opt.depth * d;
+    pen[cv * CW + cu] = opt.avoid * (1 - d) + 0.2;
+  }
+  const cnt = new Float32Array(CW * CH), inked = new Uint8Array(FW * FH), gain = new Float32Array(CW * CH);
+  const T = opt.horizon || 320, E = opt.exec || 110, TW = T + 1;
+  const F = new Float32Array(TW * TW), BP = new Uint8Array(TW * TW);
+  const tr = { t: [], a1: [], a2: [], ink: [], x: [], y: [] };
+  let i0 = 0, j0 = 0, a1 = 0, a2 = 0, t = 0, steps = 0, idle = 0, fresh = 0;
+  const push = ink => { const q = fk(p, a1, a2).pen; tr.t.push(t); tr.a1.push(a1); tr.a2.push(a2); tr.ink.push(ink); tr.x.push(q[0]); tr.y.push(q[1]); };
+  push(0);
+  const eg = (n, ty) => { let g = 0; const o = n * 9 + ty * 3; for (let q = 0; q < 3; q++) { const px = EP[o + q]; if (!inked[px]) g += gain[cellOf[px]]; } return g; };
+  const maxSteps = opt.maxSteps || 60000;
+  while (steps < maxSteps && idle < 7) {
+    const im = Math.pow(0.5, idle); // 行き詰まったら、白地を横切る抵抗を一時的に下げる
+    for (let c = 0; c < gain.length; c++) gain[c] = cnt[c] < target[c] ? 2 - cnt[c] / target[c] : -pen[c] * im;
+    // 先読み（動的計画法）：T 歩先までで得点が最大になる道を探す
+    F[0] = 0;
+    for (let k = 1; k <= T; k++) for (let x = 0; x <= k; x++) {
+      let best = -1e9, bp = 0;
+      if (x >= 1) { const v = F[(k - 1) * TW + x - 1] + eg(idx(i0 + x - 1, j0 + k - x), 0); if (v > best) { best = v; bp = 0; } }
+      if (x <= k - 1) { const v = F[(k - 1) * TW + x] + eg(idx(i0 + x, j0 + k - 1 - x), 1); if (v > best) { best = v; bp = 1; } }
+      if (k >= 2 && x >= 1 && x <= k - 1) { const v = F[(k - 2) * TW + x - 1] + eg(idx(i0 + x - 1, j0 + k - 1 - x), 2); if (v > best) { best = v; bp = 2; } }
+      F[k * TW + x] = best; BP[k * TW + x] = bp;
+    }
+    let bx = 0; for (let x = 1; x <= T; x++) if (F[T * TW + x] > F[T * TW + bx]) bx = x;
+    const seq = []; for (let k = T, x = bx; k > 0;) { const bp = BP[k * TW + x]; seq.push(bp); if (bp === 0) { k--; x--; } else if (bp === 1) { k--; } else { k -= 2; x--; } }
+    // 先頭の E 歩ぶんだけ実行して、塗った画素を記録する
+    let done = 0, got = 0;
+    for (let q = seq.length - 1; q >= 0 && done < E; q--) {
+      const ty = seq[q], n = idx(i0, j0), o = n * 9 + ty * 3;
+      for (let r = 0; r < 3; r++) { const px = EP[o + r]; if (!inked[px]) { inked[px] = 1; const c = cellOf[px]; if (cnt[c] < target[c]) got++; cnt[c]++; fresh++; } }
+      if (ty !== 1) i0++; if (ty !== 0) j0++;
+      a1 += h * STEP[ty][0]; a2 += h * STEP[ty][1]; t += h * Math.max(STEP[ty][0], STEP[ty][1]) / wmax;
+      done += ty === 2 ? 2 : 1; steps++; push(1);
+    }
+    idle = got < 3 ? idle + 1 : 0;
+  }
+  const retraced = 1 - fresh / (steps * 3);
+  return { tr, total: t, drawT: t, maxErr: null, backward: 0, rev: [a1 / TAU, a2 / TAU], runs: 1, skipped: 0, steps, retraced };
+}
+/* ---- 線画（単位座標、y 下向き） ---- */
+function arc(cx, cy, r, a0, a1, n) { const o = []; for (let i = 0; i <= n; i++) { const a = a0 + (a1 - a0) * i / n; o.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]); } return o; }
+const PRESETS = {
+  cat: () => [
+    arc(0, 0.2, 0.72, 0, TAU, 72),
+    [[-0.62, -0.17], [-0.68, -0.88], [-0.2, -0.49]],
+    [[0.62, -0.17], [0.68, -0.88], [0.2, -0.49]],
+    arc(-0.28, 0.05, 0.09, 0, TAU, 20),
+    arc(0.28, 0.05, 0.09, 0, TAU, 20),
+    [[-0.07, 0.27], [0.07, 0.27], [0, 0.36], [-0.07, 0.27]],
+    arc(-0.13, 0.36, 0.13, 0, Math.PI, 14),
+    arc(0.13, 0.36, 0.13, 0, Math.PI, 14),
+    [[-0.3, 0.3], [-0.95, 0.18]], [[-0.3, 0.38], [-0.95, 0.45]],
+    [[0.3, 0.3], [0.95, 0.18]], [[0.3, 0.38], [0.95, 0.45]],
+  ],
+  house: () => [
+    [[-0.7, 0.9], [0.7, 0.9], [0.7, -0.1], [-0.7, -0.1], [-0.7, 0.9]],
+    [[-0.9, -0.1], [0, -0.9], [0.9, -0.1]],
+    [[-0.12, 0.9], [-0.12, 0.35], [0.2, 0.35], [0.2, 0.9]],
+    [[-0.58, 0.1], [-0.28, 0.1], [-0.28, 0.4], [-0.58, 0.4], [-0.58, 0.1]],
+    [[0.32, 0.1], [0.6, 0.1], [0.6, 0.4], [0.32, 0.4], [0.32, 0.1]],
+    [[0.4, -0.54], [0.4, -0.82], [0.56, -0.82], [0.56, -0.4]],
+  ],
+  star: () => { const o = []; for (let i = 0; i <= 5; i++) { const a = -Math.PI / 2 + i * 2 * TAU / 5; o.push([0.95 * Math.cos(a), 0.95 * Math.sin(a)]); } return [o, arc(0, 0, 0.36, 0, TAU, 48)]; },
+  spiral: () => { const o = []; for (let i = 0; i <= 400; i++) { const a = i / 400 * 4.5 * TAU; o.push([0.2 * a / TAU * Math.cos(a), 0.2 * a / TAU * Math.sin(a)]); } return [o]; },
+};
+</script>
+
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  const view = $("view"), vctx = view.getContext("2d"), torus = $("torus"), tctx = torus.getContext("2d");
+  const inkCv = document.createElement("canvas"), ictx = inkCv.getContext("2d");
+  const torCv = document.createElement("canvas"), octx = torCv.getContext("2d");
+  const WMAX = TAU; // 1 回転/秒
+  let imgEl = null, imgUnit = [];
+  let P, paths = [], custom = [], res = null, outline = [], T = 0, playing = true, last = 0, live = null;
+  let col = {}, colAt = 0, tf = { s: 1, ox: 0, oy: 0, dpr: 1 }, inkIdx = 0, inkDirty = true, inkColor = "";
+  const isScan = () => $("mode").value !== "stroke"; // ペンを上げない方式かどうか
+  const isRe = () => $("mode").value === "retrace";
+
+  function params() { return { r: +$("r").value, L: +$("L").value, d: +$("d").value }; }
+  function colors() {
+    const now = performance.now();
+    if (now - colAt < 400 && col.fg) return col;
+    const cs = getComputedStyle(document.documentElement);
+    for (const k of ["bg", "surface", "paper", "fg", "muted", "line", "ink", "mech"]) col[k] = cs.getPropertyValue("--" + k).trim();
+    colAt = now; return col;
+  }
+  function labels() {
+    $("rOut").textContent = $("r").value + " mm"; $("LOut").textContent = $("L").value + " mm";
+    $("dOut").textContent = $("d").value + " mm"; $("rhoOut").textContent = Math.round($("rho").value * 100) + " %";
+    $("thrOut").textContent = $("thr").value;
+    $("depthOut").textContent = $("depth").value; $("avoidOut").textContent = (+$("avoid").value).toFixed(1);
+    $("revsOut").textContent = $("revs").value + " 周"; $("conOut").textContent = (+$("con").value).toFixed(1);
+    $("tremOut").textContent = Math.round($("trem").value * 100) + " %";
+    $("speedOut").textContent = "×" + (2 ** +$("speed").value).toFixed(2).replace(/\.?0+$/, "");
+  }
+  // 絵の濃さ（0 = 白、1 = 黒）を紙の上の関数として用意する
+  function buildTone(kind) {
+    const n = 256, cv = document.createElement("canvas"); cv.width = cv.height = n;
+    const cx = cv.getContext("2d", { willReadFrequently: true }), c0 = center(P);
+    cx.fillStyle = "#fff"; cx.fillRect(0, 0, n, n);
+    let H = 1;
+    if (kind === "image" && imgEl) {
+      H = fitPaths(P, [[[-1, -1], [1, -1], [1, 1], [-1, 1], [-1, -1]]])[0][1][0] - c0[0];
+      const k = n / Math.max(imgEl.naturalWidth, imgEl.naturalHeight), w = imgEl.naturalWidth * k, h = imgEl.naturalHeight * k;
+      cx.drawImage(imgEl, (n - w) / 2, (n - h) / 2, w, h);
+    } else {
+      for (const p of paths) for (const [x, y] of p) H = Math.max(H, Math.abs(x - c0[0]), Math.abs(y - c0[1]));
+      H += 4;
+      const k = n / (2 * H);
+      cx.setTransform(k, 0, 0, k, n / 2 - c0[0] * k, n / 2 - c0[1] * k);
+      cx.strokeStyle = "#000"; cx.lineWidth = isRe() ? 3.2 : 6; cx.lineJoin = cx.lineCap = "round";
+      for (const p of paths) { if (p.length < 2) continue; cx.beginPath(); p.forEach((q, i) => i ? cx.lineTo(q[0], q[1]) : cx.moveTo(q[0], q[1])); cx.stroke(); }
+    }
+    const d = cx.getImageData(0, 0, n, n).data, D = new Float32Array(n * n);
+    for (let i = 0; i < n * n; i++) D[i] = 1 - (0.299 * d[4 * i] + 0.587 * d[4 * i + 1] + 0.114 * d[4 * i + 2]) / 255;
+    return (x, y) => {
+      const u = (x - c0[0] + H) / (2 * H) * n - 0.5, v = (y - c0[1] + H) / (2 * H) * n - 0.5;
+      if (!(u >= 0 && v >= 0 && u < n - 1 && v < n - 1)) return 0;
+      const i = u | 0, j = v | 0, fu = u - i, fv = v - j, a = j * n + i;
+      return (D[a] * (1 - fu) + D[a + 1] * fu) * (1 - fv) + (D[a + n] * (1 - fu) + D[a + n + 1] * fu) * fv;
+    };
+  }
+  function replan(keepTime) {
+    labels();
+    P = params();
+    const kind = $("preset").value, isCustom = kind === "custom", scan = isScan();
+    $("clear").hidden = !isCustom; $("hint").hidden = !isCustom;
+    view.classList.toggle("drawable", isCustom);
+    $("thrRow").hidden = kind !== "image" || scan;
+    $("scanBox").hidden = !scan || isRe(); $("reBox").hidden = !isRe(); $("upRow").hidden = scan;
+    const msg = $("msg"); msg.hidden = true; inkDirty = true;
+    if (!mechOk(P)) {
+      res = null; paths = []; outline = [];
+      msg.textContent = "この寸法ではクランクが一回転できないか、ロッドが伸び切りに近づきます。L を長くするか、d と r を見直してください。";
+      msg.hidden = false; layout(); stats(); return;
+    }
+    outline = regionOutline(P, 24);
+    paths = isCustom ? custom : fitPaths(P, kind === "image" ? imgUnit : PRESETS[kind]());
+    if (scan) {
+      res = isRe() ? buildRetrace(P, buildTone(kind), { wmax: WMAX, depth: +$("depth").value, avoid: +$("avoid").value }) : buildScan(P, buildTone(kind), { wmax: WMAX, rho: +$("rho").value, revs: +$("revs").value, contrast: +$("con").value, tremble: +$("trem").value });
+    } else {
+      res = planAll(P, paths, { wmax: WMAX, rho: +$("rho").value, step: 0.5 });
+      if (kind === "image" && !imgUnit.length) { msg.textContent = "線が見つかりませんでした。「線として拾う暗さ」を上げてみてください。"; msg.hidden = false; }
+      else if (res.skipped) { msg.textContent = "枠の外にはみ出した部分は描けないので省きました。"; msg.hidden = false; }
+    }
+    if (!keepTime) { T = 0; playing = true; }
+    T = Math.min(T, res.total);
+    layout(); stats(); syncPlay();
+  }
+  function stats() {
+    const f = (v, u) => v.toFixed(1) + " " + u;
+    $("sRuns").textContent = res ? res.runs : "–";
+    $("sTime").textContent = res ? f(res.total, "秒") : "–";
+    $("sDraw").textContent = res ? f(res.drawT, "秒") : "–";
+    $("sRev").textContent = res ? res.rev[0].toFixed(1) + " / " + res.rev[1].toFixed(1) : "–";
+    $("sErr").textContent = res && res.maxErr != null ? res.maxErr.toFixed(2) + " mm" : "–";
+    $("sBack").textContent = res ? res.backward : "–";
+    $("sLift").textContent = res ? (isScan() ? 0 : res.runs) : "–";
+    $("sRe").textContent = res && res.retraced != null ? Math.round(res.retraced * 100) + " %" : "–";
+  }
+  function layout() {
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const xmin = -P.d / 2 - P.r - 16, xmax = P.d / 2 + P.r + 16, ymin = -P.r - 16;
+    const ymax = Math.sqrt(Math.max(1, (P.L + P.r) ** 2 - P.d * P.d / 4)) + 14;
+    const cssW = view.clientWidth || 800, s = cssW / (xmax - xmin), cssH = (ymax - ymin) * s;
+    view.width = Math.round(cssW * dpr); view.height = Math.round(cssH * dpr);
+    tf = { s: s * dpr, ox: -xmin * s * dpr, oy: -ymin * s * dpr, dpr };
+    inkDirty = true;
+  }
+  function syncPlay() { $("play").textContent = !res || T >= res.total ? "もう一度" : playing ? "一時停止" : "再生"; }
+
+  function stateAt(time) {
+    const tr = res.tr; let lo = 0, hi = tr.t.length - 1;
+    while (lo < hi) { const m = (lo + hi + 1) >> 1; if (tr.t[m] <= time) lo = m; else hi = m - 1; }
+    const i = lo, j = Math.min(i + 1, tr.t.length - 1), span = tr.t[j] - tr.t[i];
+    const u = span > 0 ? Math.min(1, (time - tr.t[i]) / span) : 0;
+    return { i, j, u, a1: tr.a1[i] + (tr.a1[j] - tr.a1[i]) * u, a2: tr.a2[i] + (tr.a2[j] - tr.a2[i]) * u, down: tr.ink[j] === 1 && j !== i };
+  }
+  function stroke(ctx, pts, close) { ctx.beginPath(); pts.forEach((q, i) => i ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1])); if (close) ctx.closePath(); }
+  const TW = () => torus.width, TPAD = 8, TX = a => TPAD + mod2pi(a) * (TW() - 2 * TPAD) / TAU, TY = a => TW() - TPAD - mod2pi(a) * (TW() - 2 * TPAD) / TAU;
+
+  // 描き終えたインクは別のキャンバスに貯め、毎フレームは増えた分だけ描き足す
+  function syncInk(c, st) {
+    if (inkDirty || st.i < inkIdx || inkColor !== c.ink) {
+      inkCv.width = view.width; inkCv.height = view.height; torCv.width = torCv.height = torus.width;
+      inkIdx = 0; inkDirty = false; inkColor = c.ink;
+    }
+    if (st.i <= inkIdx) return;
+    const tr = res.tr, px = tf.dpr / tf.s, scan = isScan();
+    ictx.setTransform(tf.s, 0, 0, tf.s, tf.ox, tf.oy);
+    ictx.strokeStyle = octx.strokeStyle = c.ink; ictx.lineJoin = ictx.lineCap = "round";
+    ictx.lineWidth = (scan ? 1 : 2) * px; octx.lineWidth = scan ? 1 : 2;
+    for (let k0 = inkIdx + 1; k0 <= st.i; k0 += 3000) {
+      const k1 = Math.min(st.i, k0 + 2999);
+      ictx.beginPath(); octx.beginPath();
+      let open = false;
+      for (let k = k0; k <= k1; k++) {
+        if (!tr.ink[k]) { open = false; continue; }
+        if (!open) { ictx.moveTo(tr.x[k - 1], tr.y[k - 1]); open = true; }
+        ictx.lineTo(tr.x[k], tr.y[k]);
+        const x0 = TX(tr.a1[k - 1]), y0 = TY(tr.a2[k - 1]), x1 = TX(tr.a1[k]), y1 = TY(tr.a2[k]);
+        if (x1 >= x0 - 1 && y1 <= y0 + 1) { octx.moveTo(x0, y0); octx.lineTo(x1, y1); } // 360° をまたぐ区間は結ばない
+      }
+      ictx.stroke(); octx.stroke();
+    }
+    inkIdx = st.i;
+  }
+
+  function draw() {
+    const c = colors(), ctx = vctx, px = tf.dpr / tf.s; // px = 1 CSS ピクセル相当の mm
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, view.width, view.height);
+    if (!P) return;
+    const scan = isScan();
+    ctx.setTransform(tf.s, 0, 0, tf.s, tf.ox, tf.oy);
+    ctx.lineJoin = ctx.lineCap = "round";
+    if (outline.length) { stroke(ctx, outline, true); ctx.fillStyle = c.paper; ctx.fill(); ctx.strokeStyle = c.line; ctx.lineWidth = px; ctx.stroke(); }
+    if (!scan) { // 目標の線画（薄く）
+      ctx.strokeStyle = c.line; ctx.lineWidth = 1.5 * px;
+      for (const path of paths) { stroke(ctx, path); ctx.stroke(); }
+    }
+    if (live && live.length > 1) { ctx.strokeStyle = c.muted; ctx.lineWidth = 1.5 * px; stroke(ctx, live); ctx.stroke(); }
+    let st = null;
+    if (res) {
+      st = stateAt(T); const tr = res.tr, f = fk(P, st.a1, st.a2);
+      syncInk(c, st);
+      ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(inkCv, 0, 0); ctx.setTransform(tf.s, 0, 0, tf.s, tf.ox, tf.oy);
+      if (!scan && $("showUp").checked) { // 移動中の軌跡は直近だけ残す
+        ctx.strokeStyle = c.muted; ctx.lineWidth = 0.8 * px; ctx.globalAlpha = 0.35; ctx.beginPath();
+        for (let k = Math.max(1, st.i - 500); k <= st.i; k++) { if (tr.ink[k]) continue; ctx.moveTo(tr.x[k - 1], tr.y[k - 1]); ctx.lineTo(tr.x[k], tr.y[k]); }
+        ctx.stroke(); ctx.globalAlpha = 1;
+      }
+      if (st.j !== st.i && tr.ink[st.j]) { // 描きかけの最後の一区間
+        ctx.strokeStyle = c.ink; ctx.lineWidth = (scan ? 1 : 2) * px; ctx.beginPath(); ctx.moveTo(tr.x[st.i], tr.y[st.i]); ctx.lineTo(f.pen[0], f.pen[1]); ctx.stroke();
+      }
+    }
+    // 機構
+    const a1 = st ? st.a1 : 0, a2 = st ? st.a2 : 0, f = fk(P, a1, a2), M = [[-P.d / 2, 0], [P.d / 2, 0]], E = [f.e1, f.e2], A = [a1, a2];
+    for (let i = 0; i < 2; i++) {
+      ctx.beginPath(); ctx.arc(M[i][0], M[i][1], P.r + 7, 0, TAU); ctx.fillStyle = c.surface; ctx.fill();
+      ctx.strokeStyle = c.mech; ctx.lineWidth = 1.5 * px; ctx.stroke();
+      for (let k = 0; k < 6; k++) { // 回転が見えるように円盤に穴を並べる
+        const a = A[i] + k * TAU / 6; ctx.beginPath();
+        ctx.arc(M[i][0] + (P.r * 0.55) * Math.cos(a), M[i][1] + (P.r * 0.55) * Math.sin(a), k ? 2.2 : 4, 0, TAU);
+        ctx.fillStyle = c.line; ctx.fill();
+      }
+      ctx.beginPath(); ctx.moveTo(M[i][0], M[i][1]); ctx.lineTo(E[i][0], E[i][1]); ctx.strokeStyle = c.mech; ctx.lineWidth = 5 * px; ctx.stroke();
+      ctx.beginPath(); ctx.arc(M[i][0], M[i][1], 4, 0, TAU); ctx.fillStyle = c.mech; ctx.fill();
+    }
+    if (f.ok) {
+      ctx.strokeStyle = c.fg; ctx.lineWidth = 3 * px; ctx.globalAlpha = scan ? 0.75 : 1;
+      for (let i = 0; i < 2; i++) { ctx.beginPath(); ctx.moveTo(E[i][0], E[i][1]); ctx.lineTo(f.pen[0], f.pen[1]); ctx.stroke(); }
+      ctx.globalAlpha = 1;
+      for (let i = 0; i < 2; i++) { ctx.beginPath(); ctx.arc(E[i][0], E[i][1], 3.2, 0, TAU); ctx.fillStyle = c.surface; ctx.fill(); ctx.strokeStyle = c.fg; ctx.lineWidth = 1.5 * px; ctx.stroke(); }
+      const down = st && st.down;
+      ctx.beginPath(); ctx.arc(f.pen[0], f.pen[1], down ? 3.5 : 6, 0, TAU);
+      ctx.fillStyle = down ? c.ink : c.surface; ctx.fill(); ctx.strokeStyle = down ? c.ink : c.fg; ctx.lineWidth = 1.5 * px; ctx.stroke();
+    }
+    ctx.fillStyle = c.muted; ctx.font = `${12 * px}px JetBrains Mono, monospace`; ctx.textAlign = "center";
+    ctx.fillText("M1 ↻", M[0][0], -P.r - 10); ctx.fillText("M2 ↻", M[1][0], -P.r - 10);
+    drawTorus(c, st);
+    $("bar").style.width = res && res.total ? (100 * T / res.total) + "%" : "0";
+  }
+  function drawTorus(c, st) {
+    const ctx = tctx, W = torus.width;
+    ctx.clearRect(0, 0, W, W);
+    ctx.strokeStyle = c.line; ctx.lineWidth = 1;
+    for (let k = 0; k <= 4; k++) { const v = TPAD + k * (W - 2 * TPAD) / 4; ctx.beginPath(); ctx.moveTo(v, TPAD); ctx.lineTo(v, W - TPAD); ctx.moveTo(TPAD, v); ctx.lineTo(W - TPAD, v); ctx.stroke(); }
+    if (!res || !st) return;
+    ctx.drawImage(torCv, 0, 0);
+    if (!isScan()) {
+      const tr = res.tr; ctx.strokeStyle = c.muted; ctx.globalAlpha = 0.35; ctx.beginPath();
+      for (let k = Math.max(1, st.i - 500); k <= st.i; k++) {
+        if (tr.ink[k]) continue;
+        const x0 = TX(tr.a1[k - 1]), y0 = TY(tr.a2[k - 1]), x1 = TX(tr.a1[k]), y1 = TY(tr.a2[k]);
+        if (x1 < x0 - 1 || y1 > y0 + 1) continue;
+        ctx.moveTo(x0, y0); ctx.lineTo(x1, y1);
+      }
+      ctx.stroke(); ctx.globalAlpha = 1;
+    }
+    ctx.beginPath(); ctx.arc(TX(st.a1), TY(st.a2), 4, 0, TAU); ctx.fillStyle = c.mech; ctx.fill();
+  }
+  function frame(now) {
+    const dt = Math.min(0.1, (now - last) / 1000); last = now;
+    if (res && playing && T < res.total) { T = Math.min(res.total, T + dt * 2 ** +$("speed").value); if (T >= res.total) syncPlay(); }
+    draw(); requestAnimationFrame(frame);
+  }
+
+  // 操作
+  for (const id of ["r", "L", "d", "rho", "revs", "con", "trem", "depth", "avoid"]) { $(id).addEventListener("change", () => replan(false)); $(id).addEventListener("input", () => { labels(); if (!isScan()) replan(false); }); }
+  $("speed").addEventListener("input", labels);
+  $("preset").addEventListener("change", () => replan(false));
+  $("mode").addEventListener("change", () => { if (isScan() && +$("speed").value < 2) $("speed").value = 2; replan(false); });
+  $("play").addEventListener("click", () => { if (!res) return; if (T >= res.total) { T = 0; playing = true; } else playing = !playing; syncPlay(); });
+  $("restart").addEventListener("click", () => { T = 0; playing = true; syncPlay(); });
+  $("finish").addEventListener("click", () => { if (res) { T = res.total; syncPlay(); } });
+  $("clear").addEventListener("click", () => { custom = []; replan(false); });
+  const toWorld = e => { const b = view.getBoundingClientRect(), k = view.width / b.width; return [((e.clientX - b.left) * k - tf.ox) / tf.s, ((e.clientY - b.top) * k - tf.oy) / tf.s]; };
+  view.addEventListener("pointerdown", e => { if ($("preset").value !== "custom" || !P) return; view.setPointerCapture(e.pointerId); live = [toWorld(e)]; e.preventDefault(); });
+  view.addEventListener("pointermove", e => { if (!live) return; const q = toWorld(e), l = live[live.length - 1]; if (Math.hypot(q[0] - l[0], q[1] - l[1]) > 1.2) live.push(q); });
+  const endStroke = () => { if (!live) return; if (live.length > 1) { custom = custom.concat([live]); live = null; replan(false); } live = null; };
+  view.addEventListener("pointerup", endStroke); view.addEventListener("pointercancel", endStroke);
+  // 画像の読み込み
+  function traceImage() {
+    if (!imgEl) return;
+    const k = Math.min(1, 300 / Math.max(imgEl.naturalWidth, imgEl.naturalHeight));
+    const w = Math.max(8, Math.round(imgEl.naturalWidth * k)), h = Math.max(8, Math.round(imgEl.naturalHeight * k));
+    const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+    const cx = cv.getContext("2d", { willReadFrequently: true });
+    cx.fillStyle = "#fff"; cx.fillRect(0, 0, w, h); cx.drawImage(imgEl, 0, 0, w, h);
+    const d = cx.getImageData(0, 0, w, h).data, bin = new Uint8Array(w * h), thr = +$("thr").value;
+    for (let i = 0; i < w * h; i++) bin[i] = 0.299 * d[4 * i] + 0.587 * d[4 * i + 1] + 0.114 * d[4 * i + 2] < thr ? 1 : 0;
+    imgUnit = bitmapToPaths(bin, w, h);
+    const opt = $("preset").querySelector('option[value="image"]'); opt.disabled = false; $("preset").value = "image";
+    replan(false);
+  }
+  function loadImage(file) {
+    if (!file || !/^image\//.test(file.type)) return;
+    const im = new Image();
+    im.onload = () => { imgEl = im; traceImage(); };
+    im.onerror = () => { $("msg").textContent = "この画像は読み込めませんでした。PNG か JPEG を試してください。"; $("msg").hidden = false; };
+    im.src = URL.createObjectURL(file);
+  }
+  $("pick").addEventListener("click", () => $("file").click());
+  $("file").addEventListener("change", e => loadImage(e.target.files[0]));
+  $("thr").addEventListener("change", traceImage);
+  $("thr").addEventListener("input", labels);
+  window.addEventListener("paste", e => { const it = [...(e.clipboardData ? e.clipboardData.items : [])].find(i => i.type.startsWith("image/")); if (it) { loadImage(it.getAsFile()); e.preventDefault(); } });
+  window.addEventListener("dragover", e => e.preventDefault());
+  window.addEventListener("drop", e => { e.preventDefault(); if (e.dataTransfer.files[0]) loadImage(e.dataTransfer.files[0]); });
+  window.addEventListener("resize", () => { if (P) layout(); });
+
+  const h = location.hash;
+  if (h === "#scan" || h === "#scan-end") { $("mode").value = "scan"; $("speed").value = 2; }
+  if (h === "#retrace" || h === "#retrace-end") { $("mode").value = "retrace"; $("speed").value = 2; }
+  replan(false);
+  if (h === "#end" || h === "#scan-end" || h === "#retrace-end" || (window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches)) { if (res) T = res.total; syncPlay(); }
+  last = performance.now(); requestAnimationFrame(frame);
+})();
+</script>
+
+</body></html>
